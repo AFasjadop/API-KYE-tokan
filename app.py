@@ -15,17 +15,22 @@ from Crypto.Cipher import AES
 import base64
 
 # === Settings ===
+
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
 RELEASEVERSION = "OB52"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
 SUPPORTED_REGIONS = {"IND", "BR", "US", "SAC", "NA", "SG", "RU", "ID", "TW", "VN", "TH", "ME", "PK", "CIS", "BD", "EUROPE"}
 
+# === Flask App Setup ===
+
 app = Flask(__name__)
 CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 cached_tokens = defaultdict(dict)
 uid_region_cache = {}
+
+# === Helper Functions ===
 
 def pad(text: bytes) -> bytes:
     padding_length = AES.block_size - (len(text) % AES.block_size)
@@ -52,6 +57,8 @@ def get_account_credentials(region: str) -> str:
         return "uid=4044223479&password=EB067625F1E2CB705C7561747A46D502480DC5D41497F4C90F3FDBC73B8082ED"
     else:
         return "uid=4108414251&password=E4F9C33BBEB23C0DA0AD7E60F63C8A05D6A878798E3CD32C4E2314C1EEFD4F72"
+
+# === Token Generation ===
 
 async def get_access_token(account: str):
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
@@ -111,6 +118,8 @@ async def GetAccountInformation(uid, unk, region, endpoint):
         resp = await client.post(server+endpoint, data=data_enc, headers=headers)
         return json.loads(json_format.MessageToJson(decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)))
 
+# === Caching Decorator ===
+
 def cached_endpoint(ttl=300):
     def decorator(fn):
         @wraps(fn)
@@ -124,6 +133,8 @@ def cached_endpoint(ttl=300):
         return wrapper
     return decorator
 
+# === Flask Routes ===
+
 @app.route('/player-info')
 @cached_endpoint()
 def get_account_info():
@@ -131,47 +142,39 @@ def get_account_info():
     if not uid:
         return jsonify({"error": "Please provide UID."}), 400
 
+    # Check cached region for UID
     if uid in uid_region_cache:
         try:
             return_data = asyncio.run(GetAccountInformation(uid, "7", uid_region_cache[uid], "/GetPlayerPersonalShow"))
-            # FILTERED OUTPUT
-            return jsonify({
-                "name": return_data.get("basicInfo", {}).get("nickname", "Not Found"),
-                "level": return_data.get("basicInfo", {}).get("level", 0)
-            }), 200
+            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
         except:
-            pass
+            pass  # fallback to testing all regions
 
     for region in SUPPORTED_REGIONS:
         try:
             return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
             uid_region_cache[uid] = region
-            # FILTERED OUTPUT
-            return jsonify({
-                "name": return_data.get("basicInfo", {}).get("nickname", "Not Found"),
-                "level": return_data.get("basicInfo", {}).get("level", 0)
-            }), 200
+            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
         except:
             continue
 
-    return jsonify({"error": "UID not found."}), 404
+    return jsonify({"error": "UID not found in any region."}), 404
 
 @app.route('/refresh', methods=['GET','POST'])
 def refresh_tokens_endpoint():
     try:
         asyncio.run(initialize_tokens())
-        return jsonify({'message':'Refreshed.'}),200
+        return jsonify({'message':'Tokens refreshed for all regions.'}),200
     except Exception as e:
-        return jsonify({'error': f'Failed: {e}'}),500
+        return jsonify({'error': f'Refresh failed: {e}'}),500
+
+# === Startup ===
 
 async def startup():
     await initialize_tokens()
     asyncio.create_task(refresh_tokens_periodically())
-
-if __name__ == '__main__':
-    asyncio.run(startup())
-    app.run(host='0.0.0.0', port=5000, debug=True)
-sk(refresh_tokens_periodically())
 
 if __name__ == '__main__':
     asyncio.run(startup())
